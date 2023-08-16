@@ -1,13 +1,13 @@
     
-from fractions import Fraction
 from einops import rearrange
+from fractions import Fraction
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from demucs.hdemucs import HDecLayer, HEncLayer, MultiWrap, ScaledEmbedding
 from demucs.htdemucs import HTDemucs
 
-from typing import List, Tuple, Union, ClassVar
+from typing import List, Tuple, Union
 
 class HLayerBlock(nn.Module):
     def __init__(self,
@@ -200,7 +200,7 @@ class HTDemucsV2(HTDemucs):
         for old_decoder, new_decoder in zip(self.decoder, self.decoder_block.layers):
             new_decoder.load_state_dict(old_decoder.state_dict())
 
-    def cross_encode(self, mix):
+    def preprocess(self, mix):
         length_pre_pad = None
         if self.use_train_segment:
             if self.training:
@@ -225,6 +225,14 @@ class HTDemucsV2(HTDemucs):
         meant = xt.mean(dim=(1, 2), keepdim=True)
         stdt = xt.std(dim=(1, 2), keepdim=True)
         xt = (xt - meant) / (1e-5 + stdt)
+
+        return x, xt, dict(mean=mean, std=std), dict(mean=meant, std=stdt), z
+
+    def cross_encode(self, x_or_mix, xt=None):
+        if xt is None:
+            x, xt, *_ = self.preprocess(x_or_mix)
+        else:
+            x = x_or_mix
 
         hidden_states, lengths = self.encoder_block(x)
         hidden_states_t, lengths_t = self.tencoder_block(xt)
@@ -255,58 +263,25 @@ class HTDemucsV2(HTDemucs):
         hidden_states_t.append(xt)
     
         return hidden_states, lengths, hidden_states_t, lengths_t
+    
+    @property
+    def training_length(self):
+        return int(self.segment * self.samplerate)
 
     def forward(self, mix):
         length = mix.shape[-1]
 
-        length_pre_pad = None
-        if self.use_train_segment:
-            if self.training:
-                self.segment = Fraction(mix.shape[-1], self.samplerate)
-            else:
-                training_length = int(self.segment * self.samplerate)
-                if mix.shape[-1] < training_length:
-                    length_pre_pad = mix.shape[-1]
-                    mix = F.pad(mix, (0, training_length - length_pre_pad))
-        z = self._spec(mix)
-        mag = self._magnitude(z).to(mix.device)
-        x = mag
+        x, xt, x_scaler, xt_scaler, z = self.preprocess(mix)
 
         B, C, Fq, T = x.shape
 
-        # unlike previous Demucs, we always normalize because it is easier.
-        mean = x.mean(dim=(1, 2, 3), keepdim=True)
-        std = x.std(dim=(1, 2, 3), keepdim=True)
-        x = (x - mean) / (1e-5 + std)
-        # x will be the freq. branch input.
+        hidden_states, lengths, hidden_states_t, lengths_t = self.cross_encode(x, xt)
 
-        # Prepare the time branch input.
-        xt = mix
-        meant = xt.mean(dim=(1, 2), keepdim=True)
-        stdt = xt.std(dim=(1, 2), keepdim=True)
-        xt = (xt - meant) / (1e-5 + stdt)
-
-        hidden_states, lengths = self.encoder_block(x)
-        hidden_states_t, lengths_t = self.tencoder_block(xt)
-
-        x = hidden_states[-1]
-        xt = hidden_states_t[-1]
-
-        if self.crosstransformer:
-            if self.bottom_channels:
-                b, c, f, t = x.shape
-                x = rearrange(x, "b c f t-> b c (f t)")
-                x = self.channel_upsampler(x)
-                x = rearrange(x, "b c (f t)-> b c f t", f=f)
-                xt = self.channel_upsampler_t(xt)
-
-            x, xt = self.crosstransformer(x, xt)
-
-            if self.bottom_channels:
-                x = rearrange(x, "b c f t-> b c (f t)")
-                x = self.channel_downsampler(x)
-                x = rearrange(x, "b c (f t)-> b c f t", f=f)
-                xt = self.channel_downsampler_t(xt)
+        # remove from list mid block values, so we can further apply skips connections correctly
+        x = hidden_states.pop(-1)
+        xt = hidden_states_t.pop(-1)
+        lengths.pop(-1)
+        lengths_t.pop(-1)
 
         hidden_states, *_ = self.decoder_block(x, hidden_states[::-1], lengths[::-1])
         hidden_states_t, *_ = self.tdecoder_block(xt, hidden_states_t[::-1], lengths_t[::-1])
@@ -316,7 +291,7 @@ class HTDemucsV2(HTDemucs):
 
         S = len(self.sources)
         x = x.view(B, S, -1, Fq, T)
-        x = x * std[:, None] + mean[:, None]
+        x = x * x_scaler['std'][:, None] + x_scaler['mean'][:, None]
 
         # to cpu as mps doesnt support complex numbers
         # demucs issue #435 ##432
@@ -331,7 +306,7 @@ class HTDemucsV2(HTDemucs):
             if self.training:
                 x = self._ispec(zout, length)
             else:
-                x = self._ispec(zout, training_length)
+                x = self._ispec(zout, self.training_length)
         else:
             x = self._ispec(zout, length)
 
@@ -343,11 +318,11 @@ class HTDemucsV2(HTDemucs):
             if self.training:
                 xt = xt.view(B, S, -1, length)
             else:
-                xt = xt.view(B, S, -1, training_length)
+                xt = xt.view(B, S, -1, self.training_length)
         else:
             xt = xt.view(B, S, -1, length)
-        xt = xt * stdt[:, None] + meant[:, None]
+        xt = xt * xt_scaler['std'][:, None] + xt_scaler['mean'][:, None]
         x = xt + x
-        if length_pre_pad:
-            x = x[..., :length_pre_pad]
+        if x.shape[-1] > length:
+            x = x[..., :length]
         return x
