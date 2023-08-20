@@ -113,9 +113,9 @@ class HLayerBlock(nn.Module):
 
         return hidden_states, lengths
 
-class HTDemucsV2(HTDemucs):
+class HTDemucsAdapter(HTDemucs):
     def __init__(self, *args, **kwargs):
-        super(HTDemucsV2, self).__init__(*args, **kwargs)
+        super(HTDemucsAdapter, self).__init__(*args, **kwargs)
 
         audio_channels = kwargs['audio_channels']
         channels = kwargs['channels']
@@ -183,9 +183,9 @@ class HTDemucsV2(HTDemucs):
         )
 
     @staticmethod
-    def from_v1(htmodel: nn.Module):
+    def from_htdemucs(htmodel: nn.Module):
         assert isinstance(htmodel, HTDemucs)
-        new_model = HTDemucsV2(**htmodel._init_args_kwargs[1])
+        new_model = HTDemucsAdapter(**htmodel._init_args_kwargs[1])
         new_model.load_state_dict(htmodel.state_dict(), strict=False)
         new_model.load_block_weights()
         return new_model
