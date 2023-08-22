@@ -1,4 +1,3 @@
-    
 from einops import rearrange
 from fractions import Fraction
 import torch
@@ -67,7 +66,7 @@ class HLayerBlock(nn.Module):
 
         if self.freq and not dconv:
             layer_params['last'] = False
-        
+
         if self.freq and dconv and self.freq_emb_weight > 0.0:
             self.freq_emb = ScaledEmbedding(
                 512, 48, smooth=emb_smooth, scale=emb_scale
@@ -183,13 +182,19 @@ class HTDemucsAdapter(HTDemucs):
         )
 
     @staticmethod
-    def from_htdemucs(htmodel: nn.Module):
+    def from_htdemucs_weights(htmodel: nn.Module):
         assert isinstance(htmodel, HTDemucs)
-        new_model = HTDemucsAdapter(**htmodel._init_args_kwargs[1])
-        new_model.load_state_dict(htmodel.state_dict(), strict=False)
-        new_model.load_block_weights()
+        new_model = HTDemucsAdapter(*htmodel._init_args_kwargs[0], **htmodel._init_args_kwargs[1])
+        new_model.load_htdemucs_weights(htmodel)
         return new_model
-    
+
+    def load_htdemucs_weights(self, htmodel: nn.Module):
+        self.load_state_dict(htmodel.state_dict(), strict=False)
+        self.load_block_weights()
+        del self.encoder
+        del self.decoder
+        return self
+
     def load_block_weights(self):
         # load first layer freq scaler
         self.encoder_block.freq_emb.load_state_dict(self.freq_emb.state_dict())
@@ -261,9 +266,9 @@ class HTDemucsAdapter(HTDemucs):
 
         hidden_states.append(x)
         hidden_states_t.append(xt)
-    
+
         return hidden_states, lengths, hidden_states_t, lengths_t
-    
+
     @property
     def training_length(self):
         return int(self.segment * self.samplerate)
