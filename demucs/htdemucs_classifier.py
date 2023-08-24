@@ -1,3 +1,5 @@
+from typing import Iterator
+from torch.nn.parameter import Parameter
 from demucs.htdemucs import HTDemucs
 from demucs.htdemucs_adapter import HTDemucsAdapter
 import torch
@@ -22,6 +24,12 @@ class HTDemucsClassifier(HTDemucsAdapter):
       nn.Linear(self.n_classes ** 2, self.n_classes),
     )
 
+    self.set_train_mode('all')
+
+  def set_train_mode(self, mode='all'):
+    assert mode in ['all', 'only_classifier']
+    self.train_mode = mode
+
   @staticmethod
   def from_htdemucs_weights(htmodel: nn.Module, *args, **kwargs):
     assert isinstance(htmodel, HTDemucs)
@@ -29,8 +37,11 @@ class HTDemucsClassifier(HTDemucsAdapter):
     new_model.load_htdemucs_weights(htmodel)
     return new_model
 
-  def classifier_parameters(self):
-    return itertools.chain(self.transformer.parameters(), self.classifier.parameters())
+  def parameters(self, recurse: bool = True) -> Iterator[Parameter]:
+    if self.train_mode == 'all':
+      return super().parameters(recurse)
+    else:
+      return itertools.chain(self.transformer.parameters(), self.classifier.parameters())
 
   def forward(self, mix):
     hidden_state_specs, _, hidden_state_times, _ = self.cross_encode(mix)
