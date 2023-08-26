@@ -44,7 +44,11 @@ class HTDemucsClassifier(HTDemucsAdapter):
       return itertools.chain(self.transformer.parameters(), self.classifier.parameters())
 
   def forward(self, mix):
-    hidden_state_specs, _, hidden_state_times, _ = self.cross_encode(mix)
+    if self.train_mode == 'all':
+      hidden_state_specs, _, hidden_state_times, _ = self.cross_encode(mix)
+    else:
+      with torch.no_grad():
+        hidden_state_specs, _, hidden_state_times, _ = self.cross_encode(mix)
 
     x = hidden_state_specs[-1]
     xt = hidden_state_times[-1]
