@@ -53,8 +53,10 @@ class HTDemucsClassifier(HTDemucsAdapter):
 
     assert C == self.cross_encode_output_channels, 'output from cross encode block doesn\'t match'
 
-    x = torch.cat([x.view(B, C, -1), xt.view(B, C, 1, -1).repeat(1, 1, 2, 1).view(B, C, -1)], dim=-1)
-    x = F.adaptive_max_pool1d(x, self.classifier_transformer_dim)
+    x = torch.cat([
+      F.adaptive_max_pool1d(x.view(B, C, -1), self.classifier_transformer_dim // 2),
+      F.adaptive_max_pool1d(xt.view(B, C, 1, -1).repeat(1, 1, 2, 1).view(B, C, -1), self.classifier_transformer_dim // 2)
+    ], dim=-1)
 
     x = self.transformer(x).view(B, -1)
     x = self.classifier(x)
